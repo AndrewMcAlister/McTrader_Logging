@@ -21,6 +21,8 @@ time in Market_Data_Service — a health check hung for 90 s behind a slow reque
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -293,6 +295,26 @@ def create_app() -> FastAPI:
         log.warning("recording threshold for %s cleared; recording everything again", canonical)
         return {"service": canonical, "removed": removed,
                 "records": "everything (no threshold set)"}
+
+    # -- stopping ------------------------------------------------------------
+
+    @app.post("/admin/shutdown", status_code=202, tags=["ops"])
+    def shutdown(request: Request) -> Dict[str, Any]:
+        """Stop this process, from inside this process.
+
+        Session isolation means nothing in an interactive shell can terminate it: Task Scheduler
+        starts the service in session 0, and a session-2 process gets "Access is denied" at any run
+        level. A process can always end itself, which is what makes stop.bat a plain HTTP call with
+        no elevation and no second scheduled task.
+
+        Logged at WARNING: stopping the sink is a decision that should leave a trace.
+        """
+        caller = request.client.host if request.client else "unknown"
+        log.warning("shutdown requested via /admin/shutdown by %s", caller)
+        logging.shutdown()  # flush handlers before the process goes
+        threading.Timer(0.4, lambda: os._exit(0)).start()
+        return {"ok": True, "stopping": True, "requested_by": caller,
+                "note": "the boot task is boot-only, so nothing restarts this; run start.bat"}
 
     # -- reads -------------------------------------------------------------
 

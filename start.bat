@@ -4,37 +4,50 @@ REM ============================================================================
 REM  Start (or restart) McTrader_Logging on port 8004.
 REM ============================================================================
 REM
-REM  This is the same call the scheduled task makes, so running it by hand
-REM  exercises the real path rather than a parallel one.
+REM  This does not touch the process directly. It asks Task Scheduler to run the
+REM  launcher, because the service lives in SESSION 0 (that is where Task
+REM  Scheduler starts it) and a process in your interactive session cannot
+REM  terminate it -- "Access is denied", at any run level. Running the launcher
+REM  from inside the task puts it back in session 0, where the kill succeeds.
 REM
-REM  The launcher stops whatever holds port 8004 and then starts it again. That
-REM  is deliberate: it is what makes a plain run a RESTART, so the code on disk
-REM  is picked up every time without a separate stop step.
+REM  Starting a task that holds a stored password needs no elevation, so this is
+REM  a plain double-click.
 REM
-REM  It should not need elevation. The task is registered at the default run
-REM  level; if it was ever re-registered with -RunLevel Highest, the service
-REM  runs with an elevated token and only an elevated prompt can stop it.
+REM  The launcher stops whatever holds the port and starts it again, so this is a
+REM  restart: the code on disk is picked up every time.
 REM
-REM  Pauses at the end so a double-click gives you time to read the result.
-REM  For scripted use, call scripts\Ensure-LoggingService.ps1 directly.
+REM  For scripted use, call: schtasks /run /tn "McTrader_Logging_KeepAlive"
 REM ============================================================================
 
-echo.
-echo   Starting McTrader_Logging on port 8004...
-echo.
-
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Ensure-LoggingService.ps1"
-set RC=%ERRORLEVEL%
+set TASK=McTrader_Logging_KeepAlive
+set PORT=8004
 
 echo.
-if "%RC%"=="0" (
-    echo   Started.  Check: http://127.0.0.1:8004/healthz
-    echo   Log:             %~dp0logs\mctrader_logging.log
-) else (
-    echo   Failed with exit code %RC%.
-    echo   Launcher log:    %~dp0logs\ensure-history.txt
-    echo   Service log:     %~dp0logs\mctrader_logging.log
+echo   Starting McTrader_Logging...
+echo.
+
+schtasks /run /tn "%TASK%" >nul 2>&1
+if errorlevel 1 (
+    echo   Could not start the scheduled task "%TASK%".
+    echo   It may not be registered. From an elevated prompt:
+    echo       .\install-task.ps1 -Install
+    echo.
+    pause
+    endlocal & exit /b 1
 )
+
+REM The task returns immediately; the launcher then stops and starts the service.
+REM ping, not timeout: timeout refuses to run without a console
+ping -n 9 127.0.0.1 >nul
+
+echo   What the launcher did:
+powershell -NoProfile -Command "Get-Content '%~dp0logs\ensure-history.txt' -Tail 5 | ForEach-Object { '     ' + $_ }" 2>nul
+
+echo.
+powershell -NoProfile -Command "try { $h = Invoke-RestMethod 'http://127.0.0.1:%PORT%/healthz' -TimeoutSec 10; Write-Host ('   healthz: ' + $h.status + '   db=' + $h.database) } catch { Write-Host '   healthz: NOT ANSWERING -- see the service log below' }"
+
+echo.
+echo   Service log: %~dp0logs\mctrader_logging.log
 echo.
 pause
-endlocal & exit /b %RC%
+endlocal & exit /b 0
