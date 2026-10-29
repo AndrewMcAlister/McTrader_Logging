@@ -136,9 +136,15 @@ gap between them is a backlog, which is why both are kept.
 | `POST` | `/log` | Append a batch of log lines → **202** |
 | `POST` | `/event` | Append a batch of domain events → **202** |
 | `GET` | `/logs` | Query by `correlation_id`, `symbol`, `service`, `level` (minimum), `category`, `minutes`, `limit` |
-| `GET` | `/events` | Query by `correlation_id`, `symbol`, `event_type`, `minutes`, `limit` |
+| `GET` | `/events` | Query by `correlation_id`, `symbol`, `event_type`, `level` (minimum), `minutes`, `limit` |
 | `GET` | `/healthz` | Alive, and can it reach its database |
 | `GET` | `/stats` | Row counts, entries in the last hour, and a **per-client breakdown** |
+| `GET` | `/levels` | The level catalogue in force, ordered by severity |
+| `GET` | `/services` | Every client with a recording threshold, plus suppression counts |
+| `PUT` | `/services/{service}/level` | Set that client's recording threshold — drops rows below it at write time |
+| `GET` | `/services/{service}/level` | Report the threshold, and how much it has suppressed |
+| `DELETE` | `/services/{service}/level` | Remove it, so every level is recorded again |
+| `POST` | `/admin/shutdown` | Stop this process from inside it — what `stop.bat` calls |
 | `GET` | `/docs` | OpenAPI |
 
 **202, not 200.** The batch is written before the response, so `accepted` really means stored —
@@ -266,6 +272,10 @@ reports the catalogue. Full contract in `INTERFACE.md` §6b–6c.
 
 Started by **Task Scheduler**, as your interactive account — the same way McTrader is started.
 
+Day to day, use the two batch files at the top of the project: `start.bat` to
+restart it with the latest code, `stop.bat` to stop it. Neither needs elevation;
+the reasons are under "Starting, stopping and restarting" below.
+
 > **`.cmd` or `.ps1` — both work.** The execution policy was `Restricted`, which refused `.ps1` files
 > outright; it is now `RemoteSigned` for the current user (`Set-ExecutionPolicy -Scope CurrentUser
 > RemoteSigned`, no elevation required), so either form runs.
@@ -320,54 +330,68 @@ For a log sink the failure is quiet: nothing on the trading path breaks, so nobo
 until they go looking for a record of an incident that is now unrecoverable. That is the argument for
 the watchdog, and it is why the trade is written down rather than assumed.
 
-### Restarting it — and the trap
+### Starting, stopping and restarting
 
-```powershell
-# elevated
-cd <project>
-.\scripts\Ensure-LoggingService.ps1 -Restart    # stop, then start with the latest code
-.\scripts\Ensure-LoggingService.ps1 -Stop       # stop only
+Two batch files at the top of the project, and neither needs elevation:
+
+```cmd
+start.bat    :: stop whatever holds the port, then start it -- so new code is picked up
+stop.bat     :: stop it
 ```
 
-`.\install-task.ps1 -Restart` does the same thing; the launcher is the one that knows about the port.
+Both print what happened plus the log paths, then wait for a key. A result that flashes past in a
+closing window is how "it ran" gets mistaken for "it worked", which has cost real time on this
+project.
 
-The launcher takes three modes, and the difference between them is the whole trap:
+#### Why they route through Task Scheduler and HTTP
 
-| Call | Does | Used by |
+The service runs in **session 0**, because Task Scheduler started it. Your shell is **session 2**. A
+session-2 process cannot terminate a session-0 process — `Access is denied` — at *any* run level.
+This is session isolation, not privilege: a control process started in session 2 dies instantly, and
+the service never will.
+
+| File | Route | Why |
 |---|---|---|
-| `Ensure-LoggingService.ps1` | stops any stale listener, then starts | the scheduled task, at boot |
-| `Ensure-LoggingService.ps1 -Stop` | stops what holds the port | you |
-| `Ensure-LoggingService.ps1 -Restart` | stop, then start | you |
+| `start.bat` | `schtasks /run /tn "McTrader_Logging_KeepAlive"` | Task Scheduler starts it in session 0, which is exactly what it is for. Starting a task that holds a stored password needs no elevation |
+| `stop.bat` | `POST /admin/shutdown` | A process can always end itself: no privilege, no session, no extra task |
 
-The default **does** kill first. This mirrors McTrader exactly: its start script calls
-`Stop-StaleListener` before starting, and its task is boot-only, which is what makes that safe. So a
-bare run of `Ensure-LoggingService.ps1` is a restart, the same way `StartMcTraderHeadless.ps1` is.
-
-`-Stop` and `-Restart` remain because they are clearer than relying on that, and because a stop
-without a start had no way to be expressed at all.
-
-**Task Scheduler's "End" does not stop this service.** It ends the *task*, and the launcher starts the
-service *detached* — deliberately, so a task that finishes in two seconds does not take the service
-down with it. The process therefore survives, and the next scheduled run finds the port held:
+`POST /admin/shutdown` logs a WARNING and answers 202, then the process exits. Verified:
 
 ```
-16:53:36  ensure: port=8004 pid=22300
-16:53:37  already listening on 8004 -- nothing to do      <- result 0x0
+stop.bat ->  shutdown requested
+             stopped -- nothing is listening on 8004
 ```
 
-That reports success and changes nothing, which is the worst of both. Measured on 2026-10-29 while
-restarting after a code change: the task ran, returned `0x0`, and the same process (created 16:29) kept
-serving the old code.
+#### The one case this cannot handle
 
-Use `-Restart`, or stop the process by port first. It needs elevation because the task runs at
-`RunLevel Highest`:
+A **wedged** process that cannot serve HTTP cannot be asked to stop. For that, `install-task.ps1
+-Install` also registers a task whose only job is to run the launcher with `-Stop`:
 
 ```powershell
-Get-NetTCPConnection -LocalPort <port> -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+schtasks /run /tn "McTrader_Logging_KeepAlive_Stop"
 ```
 
-**How to tell a restart actually happened.** The process id changes, and the service log gets a new
-`starting ...` line with a fresh `pid=`. Checking only the task's result code will not tell you.
+It is not needed for the normal case and `stop.bat` does not depend on it.
+
+#### What does NOT work
+
+- **Task Scheduler's "End".** It ends the *task*; the launcher starts the service detached, so the
+  process survives. With a boot-only trigger nothing restarts it, and the task reports success while
+  the service is untouched.
+- **`Stop-Process` or `taskkill` from your shell.** Session isolation, as above.
+- **Re-running `install-task.ps1 -Install`** changes the registration but does not restart a running
+  service by itself.
+
+**How to tell a restart actually happened:** the pid changes and the service log gains a fresh
+`starting ... pid=` line. The task's result code will not tell you.
+
+#### The throttle, and the outage it caused
+
+The launcher refuses to start if it has started the service 30 times in the last hour, so a crash loop
+cannot spin forever. **The check runs before anything is stopped**, and that ordering is load-bearing:
+when it ran afterwards, the launcher killed the service and then refused to start a replacement,
+leaving it dead at 18:21:55 on 2026-10-29. A refusal must be inert, and the message now says
+`NOTHING WAS STOPPED`.
 
 ### The alternative: a real Windows service
 
