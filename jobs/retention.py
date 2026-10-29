@@ -6,7 +6,7 @@
 
 WHY DELETION IS BATCHED
 
-A single ``DELETE FROM dbo.LogEntry WHERE ReceivedUtc < ...`` over a few million rows takes one
+A single ``DELETE FROM dbo.LogEntry WHERE Received < ...`` over a few million rows takes one
 enormous transaction: the log grows by as much as the table shrank, locks are held for the whole
 run, and a cancellation rolls all of it back. Deleting ``TOP (n)`` at a time keeps each
 transaction small enough to commit and gives the server room between batches.
@@ -54,7 +54,7 @@ def _cutoff(months: int) -> datetime:
     months"), and a calendar implementation makes February shorter than January for no reason
     a log reader cares about.
     """
-    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30 * months)
+    return datetime.now().replace(tzinfo=None) - timedelta(days=30 * months)
 
 
 def _counts(store: Store, cutoff: datetime) -> Dict[str, Any]:
@@ -62,11 +62,11 @@ def _counts(store: Store, cutoff: datetime) -> Dict[str, Any]:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT COUNT(*), MIN(ReceivedUtc) FROM dbo.LogEntry WHERE ReceivedUtc < ?",
+            "SELECT COUNT(*), MIN(Received) FROM dbo.LogEntry WHERE Received < ?",
             cutoff)
         entries, oldest_entry = cursor.fetchone()
         cursor.execute(
-            "SELECT COUNT(*), MIN(ReceivedUtc) FROM dbo.LogEvent WHERE ReceivedUtc < ?",
+            "SELECT COUNT(*), MIN(Received) FROM dbo.LogEvent WHERE Received < ?",
             cutoff)
         events, oldest_event = cursor.fetchone()
     finally:
@@ -87,7 +87,7 @@ def _delete_batched(store: Store, table: str, cutoff: datetime, batch: int) -> i
         cursor = conn.cursor()
         while True:
             cursor.execute(
-                f"DELETE TOP (?) FROM dbo.{table} WHERE ReceivedUtc < ?", int(batch), cutoff)
+                f"DELETE TOP (?) FROM dbo.{table} WHERE Received < ?", int(batch), cutoff)
             deleted = cursor.rowcount
             conn.commit()
             removed += max(0, deleted)

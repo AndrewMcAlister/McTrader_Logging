@@ -19,7 +19,7 @@
  *                  10:30" is a query rather than a timestamp range guess.
  *   Service        which app wrote it. dbo.Logs has Location but no tenant, so two apps
  *                  logging the same module name are indistinguishable.
- *   OccurredUtc    when the event happened, on the writer's clock, against ReceivedUtc which
+ *   Occurred    when the event happened, on the writer's clock, against Received which
  *                  is when this service stored it. The difference localises a backlog.
  *   Payload        structured detail as JSON, so a message does not have to be parsed.
  *
@@ -33,9 +33,9 @@ IF OBJECT_ID('dbo.LogEntry', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.LogEntry (
         LogId         bigint IDENTITY(1,1) NOT NULL,
-        ReceivedUtc   datetime2(3)   NOT NULL CONSTRAINT DF_LogEntry_Received
-                                     DEFAULT SYSUTCDATETIME(),
-        OccurredUtc   datetime2(3)   NULL,
+        Received   datetime2(3)   NOT NULL CONSTRAINT DF_LogEntry_Received
+                                     DEFAULT SYSDATETIME(),
+        Occurred   datetime2(3)   NULL,
         Service       varchar(64)    NOT NULL,
         CorrelationId varchar(64)    NULL,
         CycleId       varchar(64)    NULL,
@@ -54,17 +54,17 @@ BEGIN
 
     /* "What happened recently", the commonest query. */
     CREATE NONCLUSTERED INDEX IX_LogEntry_Received
-        ON dbo.LogEntry (ReceivedUtc DESC)
+        ON dbo.LogEntry (Received DESC)
         INCLUDE (Service, Level, LevelName, Symbol, Message);
 
     /* "What happened in this decision" — the query that was impossible before. */
     CREATE NONCLUSTERED INDEX IX_LogEntry_Correlation
-        ON dbo.LogEntry (CorrelationId, ReceivedUtc)
+        ON dbo.LogEntry (CorrelationId, Received)
         WHERE CorrelationId IS NOT NULL;
 
     /* "What happened to this instrument". */
     CREATE NONCLUSTERED INDEX IX_LogEntry_Symbol
-        ON dbo.LogEntry (Symbol, ReceivedUtc DESC)
+        ON dbo.LogEntry (Symbol, Received DESC)
         WHERE Symbol IS NOT NULL;
 END
 GO
@@ -73,9 +73,9 @@ IF OBJECT_ID('dbo.LogEvent', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.LogEvent (
         EventId       bigint IDENTITY(1,1) NOT NULL,
-        ReceivedUtc   datetime2(3)   NOT NULL CONSTRAINT DF_LogEvent_Received
-                                     DEFAULT SYSUTCDATETIME(),
-        OccurredUtc   datetime2(3)   NULL,
+        Received   datetime2(3)   NOT NULL CONSTRAINT DF_LogEvent_Received
+                                     DEFAULT SYSDATETIME(),
+        Occurred   datetime2(3)   NULL,
         Service       varchar(64)    NOT NULL,
         CorrelationId varchar(64)    NULL,
         CycleId       varchar(64)    NULL,
@@ -88,9 +88,9 @@ BEGIN
     );
 
     CREATE NONCLUSTERED INDEX IX_LogEvent_Type
-        ON dbo.LogEvent (EventType, ReceivedUtc DESC);
+        ON dbo.LogEvent (EventType, Received DESC);
     CREATE NONCLUSTERED INDEX IX_LogEvent_Correlation
-        ON dbo.LogEvent (CorrelationId, ReceivedUtc)
+        ON dbo.LogEvent (CorrelationId, Received)
         WHERE CorrelationId IS NOT NULL;
 END
 GO
@@ -128,13 +128,13 @@ GO
 /* Service is the column that answers "which client wrote this". Without an index, every
  * filter by client and the per-service breakdown in /stats is a scan of a table that only
  * grows -- and the breakdown runs on every /stats call. Nonclustered, ordered (Service,
- * ReceivedUtc DESC) so "this client's most recent lines" is one seek. */
+ * Received DESC) so "this client's most recent lines" is one seek. */
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID('dbo.LogEntry') AND name = 'IX_LogEntry_Service')
 BEGIN
     CREATE NONCLUSTERED INDEX IX_LogEntry_Service
-        ON dbo.LogEntry (Service, ReceivedUtc DESC)
+        ON dbo.LogEntry (Service, Received DESC)
         INCLUDE (Level, LevelName, Message);
 END
 GO
@@ -144,7 +144,7 @@ IF NOT EXISTS (
     WHERE object_id = OBJECT_ID('dbo.LogEvent') AND name = 'IX_LogEvent_Service')
 BEGIN
     CREATE NONCLUSTERED INDEX IX_LogEvent_Service
-        ON dbo.LogEvent (Service, ReceivedUtc DESC)
+        ON dbo.LogEvent (Service, Received DESC)
         INCLUDE (EventType);
 END
 GO
@@ -218,7 +218,7 @@ IF NOT EXISTS (
     WHERE object_id = OBJECT_ID('dbo.LogEvent') AND name = 'IX_LogEvent_Level')
 BEGIN
     CREATE NONCLUSTERED INDEX IX_LogEvent_Level
-        ON dbo.LogEvent (Level, ReceivedUtc DESC)
+        ON dbo.LogEvent (Level, Received DESC)
         INCLUDE (Service, EventType);
 END
 GO
@@ -242,7 +242,7 @@ GO
  *     An absent row means "record everything". A default of INFO would silently start discarding
  *     every DEBUG line the day this migration ran, which is not something a migration should decide.
  *
- *   UpdatedBy/Reason/UpdatedUtc exist because changing this is an auditable act.
+ *   UpdatedBy/Reason/Updated exist because changing this is an auditable act.
  *
  *     "Why did the log go quiet on the 29th" is a question that needs an answer in the data.
  */
@@ -253,10 +253,77 @@ BEGIN
         MinLevel   tinyint      NOT NULL,
         Reason     varchar(255) NULL,
         UpdatedBy  varchar(128) NULL,
-        UpdatedUtc datetime2(3) NOT NULL CONSTRAINT DF_ServiceLogLevel_Updated
-                                DEFAULT SYSUTCDATETIME(),
+        Updated datetime2(3) NOT NULL CONSTRAINT DF_ServiceLogLevel_Updated
+                                DEFAULT SYSDATETIME(),
         CONSTRAINT PK_ServiceLogLevel PRIMARY KEY CLUSTERED (Service),
         CONSTRAINT CK_ServiceLogLevel_Range CHECK (MinLevel BETWEEN 1 AND 60)
     );
+END
+GO
+
+/* ------------------------------------------------------------------ */
+/* Migration: local time, and columns that say so                      */
+/* ------------------------------------------------------------------ */
+/* The service recorded UTC. The estate reads these tables at a desk in Sydney, so a timestamp that
+ * needed converting before it meant anything was a timestamp that got misread -- "the log went quiet
+ * at 10:30" has to be true on the wall clock people look at.
+ *
+ * Renamed as well as re-valued. A column called ReceivedUtc holding Sydney wall-clock is worse than
+ * either convention alone, because a reader cannot tell which it is. sp_rename carries the indexes
+ * and constraints with the column, and the defaults are re-created because a DEFAULT bound to the
+ * old name does not follow a rename of the column it feeds.
+ *
+ * The cost, stated once: a local timestamp is ambiguous for one hour each autumn when the clocks go
+ * back, and cannot be compared with a timestamp from another timezone without knowing this one. Both
+ * are accepted deliberately for a single-site estate.
+ */
+IF COL_LENGTH('dbo.LogEntry', 'ReceivedUtc') IS NOT NULL
+    EXEC sp_rename 'dbo.LogEntry.ReceivedUtc', 'Received', 'COLUMN';
+GO
+IF COL_LENGTH('dbo.LogEntry', 'OccurredUtc') IS NOT NULL
+    EXEC sp_rename 'dbo.LogEntry.OccurredUtc', 'Occurred', 'COLUMN';
+GO
+IF COL_LENGTH('dbo.LogEvent', 'ReceivedUtc') IS NOT NULL
+    EXEC sp_rename 'dbo.LogEvent.ReceivedUtc', 'Received', 'COLUMN';
+GO
+IF COL_LENGTH('dbo.LogEvent', 'OccurredUtc') IS NOT NULL
+    EXEC sp_rename 'dbo.LogEvent.OccurredUtc', 'Occurred', 'COLUMN';
+GO
+IF COL_LENGTH('dbo.ServiceLogLevel', 'UpdatedUtc') IS NOT NULL
+    EXEC sp_rename 'dbo.ServiceLogLevel.UpdatedUtc', 'Updated', 'COLUMN';
+GO
+
+/* Re-create the defaults, pointing at local time and the new column names. */
+IF EXISTS (SELECT 1 FROM sys.default_constraints WHERE name = 'DF_LogEntry_Received')
+BEGIN
+    ALTER TABLE dbo.LogEntry DROP CONSTRAINT DF_LogEntry_Received;
+END
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.default_constraints WHERE name = 'DF_LogEntry_Received')
+BEGIN
+    ALTER TABLE dbo.LogEntry ADD CONSTRAINT DF_LogEntry_Received
+        DEFAULT SYSDATETIME() FOR Received;
+END
+GO
+IF EXISTS (SELECT 1 FROM sys.default_constraints WHERE name = 'DF_LogEvent_Received')
+BEGIN
+    ALTER TABLE dbo.LogEvent DROP CONSTRAINT DF_LogEvent_Received;
+END
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.default_constraints WHERE name = 'DF_LogEvent_Received')
+BEGIN
+    ALTER TABLE dbo.LogEvent ADD CONSTRAINT DF_LogEvent_Received
+        DEFAULT SYSDATETIME() FOR Received;
+END
+GO
+IF EXISTS (SELECT 1 FROM sys.default_constraints WHERE name = 'DF_ServiceLogLevel_Updated')
+BEGIN
+    ALTER TABLE dbo.ServiceLogLevel DROP CONSTRAINT DF_ServiceLogLevel_Updated;
+END
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.default_constraints WHERE name = 'DF_ServiceLogLevel_Updated')
+BEGIN
+    ALTER TABLE dbo.ServiceLogLevel ADD CONSTRAINT DF_ServiceLogLevel_Updated
+        DEFAULT SYSDATETIME() FOR Updated;
 END
 GO

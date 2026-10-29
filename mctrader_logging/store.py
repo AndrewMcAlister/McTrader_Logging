@@ -26,14 +26,14 @@ SCHEMA_PATH = Path(__file__).resolve().parent.parent / "sql" / "001_schema.sql"
 
 INSERT_ENTRY = """
 INSERT INTO dbo.LogEntry
-    (OccurredUtc, Service, CorrelationId, CycleId, Level, LevelName, Category,
+    (Occurred, Service, CorrelationId, CycleId, Level, LevelName, Category,
      Location, Message, Symbol, BrokerId, OrderId, Payload)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 """
 
 INSERT_EVENT = """
 INSERT INTO dbo.LogEvent
-    (OccurredUtc, Service, CorrelationId, CycleId, EventType, Level, LevelName,
+    (Occurred, Service, CorrelationId, CycleId, EventType, Level, LevelName,
      Symbol, BrokerId, OrderId, Payload)
 VALUES (?,?,?,?,?,?,?,?,?,?,?)
 """
@@ -59,12 +59,20 @@ def _script_batches(text: str) -> List[str]:
     return batches
 
 
-def _naive_utc(value: Optional[datetime]) -> Optional[datetime]:
-    """UTC as a naive datetime, which is what datetime2 columns here store."""
+def _naive_local(value: Optional[datetime]) -> Optional[datetime]:
+    """Local time as a naive datetime, which is what the datetime2 columns store.
+
+    A value carrying an offset is converted to this machine's zone; a naive value is taken as already
+    local, because that is what every writer in this estate produces.
+
+    The trade this accepts: one hour each autumn is ambiguous, and a timestamp only means something
+    relative to this timezone. Both are fine for a single-site estate and neither is fine for a
+    distributed one.
+    """
     if value is None:
         return None
     if value.tzinfo is not None:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.astimezone().replace(tzinfo=None)
     return value
 
 
@@ -134,8 +142,8 @@ class Store:
         ("TableDoc",
          """INSERT INTO dbo.TableDoc (TableName, Grain, Purpose, RowCountNote, DataSource)
             VALUES ('LogEntry', 'one row per log line',
-            'APPEND-ONLY LOG written by D:\\McTrader_Logging. Sits BESIDE dbo.Logs, not over it: dbo.Logs is McTrader''s own table and keeps its writers until each app is migrated, so a query can UNION the two during the transition. What is new here is CorrelationId, which lets one trading decision be followed across Market_Data_Service -> trader -> broker; dbo.Logs has no equivalent, so that trail was previously unjoinable. ReceivedUtc is when this service stored the row, OccurredUtc is when the writer said it happened -- a widening gap between them is a backlog.',
-            'grows without bound; archive by ReceivedUtc', 'measured')"""),
+            'APPEND-ONLY LOG written by D:\\McTrader_Logging. Sits BESIDE dbo.Logs, not over it: dbo.Logs is McTrader''s own table and keeps its writers until each app is migrated, so a query can UNION the two during the transition. What is new here is CorrelationId, which lets one trading decision be followed across Market_Data_Service -> trader -> broker; dbo.Logs has no equivalent, so that trail was previously unjoinable. Received is when this service stored the row, Occurred is when the writer said it happened -- a widening gap between them is a backlog.',
+            'grows without bound; archive by Received', 'measured')"""),
         ("TableDoc",
          """INSERT INTO dbo.TableDoc (TableName, Grain, Purpose, RowCountNote, DataSource)
             VALUES ('LogEvent', 'one row per domain event',
@@ -148,9 +156,9 @@ class Store:
             'Sent as the X-Correlation-Id header. This is the column the logging service exists for: without it a decision spanning Market_Data_Service, the trader and the broker cannot be joined, which is the state dbo.Logs is in today.')"""),
         ("ColumnDoc",
          """INSERT INTO dbo.ColumnDoc (TableName, ColumnName, DataType, Unit, Meaning, Notes)
-            VALUES ('LogEntry', 'OccurredUtc', 'datetime2(3)', 'UTC instant',
+            VALUES ('LogEntry', 'Occurred', 'datetime2(3)', 'UTC instant',
             'When the writer says the event happened.',
-            'ReceivedUtc is when this service stored it. Both are kept so a backlog shows up as a widening gap instead of being hidden by a single timestamp.')"""),
+            'Received is when this service stored it. Both are kept so a backlog shows up as a widening gap instead of being hidden by a single timestamp.')"""),
     ]
 
     def ensure_documentation(self) -> int:
@@ -190,7 +198,7 @@ class Store:
         for record in records:
             message = (record.message or "")[: self.max_message_chars]
             payload.append((
-                _naive_utc(record.occurred_utc),
+                _naive_local(record.occurred),
                 record.service,
                 record.correlation_id,
                 record.cycle_id,
@@ -211,7 +219,7 @@ class Store:
             return 0
         payload = [
             (
-                _naive_utc(event.occurred_utc),
+                _naive_local(event.occurred),
                 event.service,
                 event.correlation_id,
                 event.cycle_id,
@@ -309,15 +317,15 @@ class Store:
             where.append("Category = ?")
             params.append(category)
         if since:
-            where.append("ReceivedUtc >= ?")
-            params.append(_naive_utc(since))
+            where.append("Received >= ?")
+            params.append(_naive_local(since))
         if until:
-            where.append("ReceivedUtc <= ?")
-            params.append(_naive_utc(until))
+            where.append("Received <= ?")
+            params.append(_naive_local(until))
 
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         sql = f"""
-            SELECT TOP (?) LogId, ReceivedUtc, OccurredUtc, Service, CorrelationId, CycleId,
+            SELECT TOP (?) LogId, Received, Occurred, Service, CorrelationId, CycleId,
                    Level, LevelName, Category, Location, Message, Symbol, BrokerId,
                    OrderId, Payload
             FROM dbo.LogEntry{clause}
@@ -357,12 +365,12 @@ class Store:
             where.append("Level >= ?")
             params.append(level_number(level))
         if since:
-            where.append("ReceivedUtc >= ?")
-            params.append(_naive_utc(since))
+            where.append("Received >= ?")
+            params.append(_naive_local(since))
 
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         sql = f"""
-            SELECT TOP (?) EventId, ReceivedUtc, OccurredUtc, Service, CorrelationId, CycleId,
+            SELECT TOP (?) EventId, Received, Occurred, Service, CorrelationId, CycleId,
                    EventType, Level, LevelName, Symbol, BrokerId, OrderId, Payload
             FROM dbo.LogEvent{clause}
             ORDER BY EventId DESC
@@ -384,9 +392,9 @@ class Store:
                 SELECT
                     (SELECT COUNT(*) FROM dbo.LogEntry),
                     (SELECT COUNT(*) FROM dbo.LogEvent),
-                    (SELECT MAX(ReceivedUtc) FROM dbo.LogEntry),
+                    (SELECT MAX(Received) FROM dbo.LogEntry),
                     (SELECT COUNT(*) FROM dbo.LogEntry
-                     WHERE ReceivedUtc >= DATEADD(hour, -1, SYSUTCDATETIME()))
+                     WHERE Received >= DATEADD(hour, -1, SYSUTCDATETIME()))
             """)
             row = cursor.fetchone()
 
@@ -396,9 +404,9 @@ class Store:
             cursor.execute("""
                 SELECT Service,
                        COUNT(*) AS rows_total,
-                       SUM(CASE WHEN ReceivedUtc >= DATEADD(day, -1, SYSUTCDATETIME())
+                       SUM(CASE WHEN Received >= DATEADD(day, -1, SYSUTCDATETIME())
                                 THEN 1 ELSE 0 END) AS rows_24h,
-                       MAX(ReceivedUtc) AS latest
+                       MAX(Received) AS latest
                 FROM dbo.LogEntry
                 GROUP BY Service
                 ORDER BY COUNT(*) DESC
@@ -428,7 +436,7 @@ class Store:
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT Service, MinLevel, Reason, UpdatedBy, UpdatedUtc "
+                "SELECT Service, MinLevel, Reason, UpdatedBy, Updated "
                 "FROM dbo.ServiceLogLevel ORDER BY Service")
             rows = cursor.fetchall()
         finally:
@@ -439,7 +447,7 @@ class Store:
                 "min_level": int(row[1]),
                 "reason": row[2],
                 "updated_by": row[3],
-                "updated_utc": row[4].isoformat() if row[4] else None,
+                "updated": row[4].isoformat() if row[4] else None,
             }
             for row in rows
         ]
@@ -465,7 +473,7 @@ class Store:
                     UPDATE SET MinLevel = source.MinLevel,
                                Reason = source.Reason,
                                UpdatedBy = source.UpdatedBy,
-                               UpdatedUtc = SYSUTCDATETIME()
+                               Updated = SYSUTCDATETIME()
                 WHEN NOT MATCHED THEN
                     INSERT (Service, MinLevel, Reason, UpdatedBy)
                     VALUES (source.Service, source.MinLevel, source.Reason, source.UpdatedBy);
@@ -527,8 +535,8 @@ class Store:
 def _entry_row(row: Any) -> Dict[str, Any]:
     return {
         "id": int(row[0]),
-        "received_utc": row[1].isoformat() if row[1] else None,
-        "occurred_utc": row[2].isoformat() if row[2] else None,
+        "received": row[1].isoformat() if row[1] else None,
+        "occurred": row[2].isoformat() if row[2] else None,
         "service": row[3],
         "correlation_id": row[4],
         "cycle_id": row[5],
@@ -547,8 +555,8 @@ def _entry_row(row: Any) -> Dict[str, Any]:
 def _event_row(row: Any) -> Dict[str, Any]:
     return {
         "id": int(row[0]),
-        "received_utc": row[1].isoformat() if row[1] else None,
-        "occurred_utc": row[2].isoformat() if row[2] else None,
+        "received": row[1].isoformat() if row[1] else None,
+        "occurred": row[2].isoformat() if row[2] else None,
         "service": row[3],
         "correlation_id": row[4],
         "cycle_id": row[5],

@@ -94,8 +94,13 @@ def correlation(value: Optional[str] = None) -> Iterator[str]:
         _correlation.reset(token)
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+def _local_now() -> datetime:
+    """Naive local wall-clock, matching what the columns store.
+
+    Sent with no offset: the writer's own local time is the event time and the service stores local.
+    An offset here would be converted on the way in and arrive as a time the writer never said.
+    """
+    return datetime.now()
 
 
 def format_line(record: Dict[str, Any]) -> str:
@@ -104,7 +109,7 @@ def format_line(record: Dict[str, Any]) -> str:
     ``[corr=...]`` is part of the message on purpose: a human reporting a problem quotes what
     they can see, and if the id is only in the database they cannot quote it.
     """
-    occurred = str(record.get("occurred_utc") or "")[:23]
+    occurred = str(record.get("occurred") or "")[:23]
     level = str(record.get("level_name") or record.get("level") or "INFO")
     service = record.get("service") or "?"
     location = record.get("location") or record.get("event_type") or "?"
@@ -194,7 +199,7 @@ class LogClient:
                 "symbol": fields.pop("symbol", None),
                 "broker_id": fields.pop("broker_id", None),
                 "order_id": fields.pop("order_id", None),
-                "occurred_utc": _utc_now().isoformat(),
+                "occurred": _local_now().isoformat(),
                 "payload": _payload_from(fields),
             }
             self._enqueue(self._entries, record)
@@ -248,7 +253,7 @@ class LogClient:
                 "symbol": fields.pop("symbol", None),
                 "broker_id": fields.pop("broker_id", None),
                 "order_id": fields.pop("order_id", None),
-                "occurred_utc": _utc_now().isoformat(),
+                "occurred": _local_now().isoformat(),
                 "payload": _payload_from(fields),
             }
             self._enqueue(self._events, record)

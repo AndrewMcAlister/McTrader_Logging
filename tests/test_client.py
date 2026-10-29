@@ -165,7 +165,7 @@ def test_the_correlation_id_travels_as_a_header_too():
 
 def test_format_line_carries_the_correlation_id_so_a_human_can_quote_it():
     line = format_line({
-        "occurred_utc": "2026-10-29T04:21:03.412Z", "level_name": "WARNING",
+        "occurred": "2026-10-29T04:21:03.412Z", "level_name": "WARNING",
         "service": "mini_mctrader", "location": "slot1_trader.stop_for",
         "correlation_id": "abc123", "message": "no ATR for SKHU", "symbol": "SKHU",
     })
@@ -280,7 +280,7 @@ def test_a_record_reaches_the_endpoint_with_the_fields_it_expects():
     assert record["level"] == "INFO"
     assert record["symbol"] == "AAPL"
     assert record["category"] == "price"
-    assert record["occurred_utc"]          # the writer's clock travels with the line
+    assert record["occurred"]          # the writer's clock travels with the line
 
 
 def test_events_go_to_the_event_endpoint_not_the_log_endpoint():

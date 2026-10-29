@@ -99,7 +99,7 @@ async def _get(path: str, params: Dict[str, Any]) -> Any:
 def _compact_log(row: Dict[str, Any]) -> Dict[str, Any]:
     """One log row reduced to what a reader needs, dropping null fields."""
     out: Dict[str, Any] = {
-        "t": (row.get("occurred_utc") or row.get("received_utc") or "")[:23],
+        "t": (row.get("occurred") or row.get("received") or "")[:23],
         "level": row.get("level_name"),
         "service": row.get("service"),
         "where": row.get("location"),
@@ -116,7 +116,7 @@ def _compact_log(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def _compact_event(row: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {
-        "t": (row.get("occurred_utc") or row.get("received_utc") or "")[:23],
+        "t": (row.get("occurred") or row.get("received") or "")[:23],
         "event": row.get("event_type"),
         "service": row.get("service"),
     }
@@ -192,14 +192,14 @@ async def recent_problems(minutes: int = 60, level: str = "WARNING",
                 "level": row.get("level_name"),
                 "where": row.get("location"),
                 "count": 1,
-                "first": (row.get("occurred_utc") or "")[:23],
-                "last": (row.get("occurred_utc") or "")[:23],
+                "first": (row.get("occurred") or "")[:23],
+                "last": (row.get("occurred") or "")[:23],
                 "sample": row.get("message"),
                 "symbols": sorted({row["symbol"]}) if row.get("symbol") else [],
             }
             continue
         entry["count"] += 1
-        stamp = (row.get("occurred_utc") or "")[:23]
+        stamp = (row.get("occurred") or "")[:23]
         entry["first"] = min(entry["first"], stamp) if stamp else entry["first"]
         entry["last"] = max(entry["last"], stamp) if stamp else entry["last"]
         if row.get("symbol") and row["symbol"] not in entry["symbols"]:
@@ -239,7 +239,7 @@ async def whats_new(minutes: int = 60, baseline_minutes: int = 1440,
 
     # Anchor the split on the newest row rather than the local clock: the service's clock and
     # this process's clock need not agree, and the newest row is the latest thing that happened.
-    stamps = sorted((r.get("occurred_utc") or r.get("received_utc") or "") for r in rows)
+    stamps = sorted((r.get("occurred") or r.get("received") or "") for r in rows)
     newest = stamps[-1]
     try:
         newest_dt = datetime.fromisoformat(newest)
@@ -250,8 +250,8 @@ async def whats_new(minutes: int = 60, baseline_minutes: int = 1440,
     def location_of(row: Dict[str, Any]) -> tuple:
         return (row.get("service"), row.get("location"), row.get("level_name"))
 
-    in_window = [r for r in rows if (r.get("occurred_utc") or "") >= cutoff]
-    baseline = [r for r in rows if (r.get("occurred_utc") or "") < cutoff]
+    in_window = [r for r in rows if (r.get("occurred") or "") >= cutoff]
+    baseline = [r for r in rows if (r.get("occurred") or "") < cutoff]
     baseline_seen = {location_of(r) for r in baseline}
 
     fresh: Dict[tuple, Dict[str, Any]] = {}
@@ -264,14 +264,14 @@ async def whats_new(minutes: int = 60, baseline_minutes: int = 1440,
             fresh[key] = {
                 "service": row.get("service"), "where": row.get("location"),
                 "level": row.get("level_name"), "count": 1,
-                "first": (row.get("occurred_utc") or "")[:23],
-                "last": (row.get("occurred_utc") or "")[:23],
+                "first": (row.get("occurred") or "")[:23],
+                "last": (row.get("occurred") or "")[:23],
                 "sample": row.get("message"),
                 "symbols": sorted({row["symbol"]}) if row.get("symbol") else [],
             }
             continue
         entry["count"] += 1
-        stamp = (row.get("occurred_utc") or "")[:23]
+        stamp = (row.get("occurred") or "")[:23]
         entry["first"] = min(entry["first"], stamp) if stamp else entry["first"]
         entry["last"] = max(entry["last"], stamp) if stamp else entry["last"]
         if row.get("symbol") and row["symbol"] not in entry["symbols"]:

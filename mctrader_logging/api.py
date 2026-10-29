@@ -332,10 +332,10 @@ def create_app() -> FastAPI:
         settings = request.app.state.settings
         since = None
         if minutes:
-            since = datetime.now(timezone.utc) - timedelta(minutes=int(minutes))
+            since = datetime.now() - timedelta(minutes=int(minutes))
         elif not correlation_id and not symbol:
             # A bare query is a recent query: without this it scans the whole table.
-            since = datetime.now(timezone.utc) - timedelta(
+            since = datetime.now() - timedelta(
                 minutes=settings.default_query_minutes)
         rows = _store(request).query_entries(
             correlation_id=correlation_id, symbol=symbol, service=service, level=level,
@@ -355,7 +355,7 @@ def create_app() -> FastAPI:
         settings = request.app.state.settings
         since = None
         if minutes:
-            since = datetime.now(timezone.utc) - timedelta(minutes=int(minutes))
+            since = datetime.now() - timedelta(minutes=int(minutes))
         rows = _store(request).query_events(
             correlation_id=correlation_id, symbol=symbol, event_type=event_type, level=level,
             since=since, limit=min(limit, settings.max_query_rows))

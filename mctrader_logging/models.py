@@ -61,7 +61,7 @@ class LogRecord(BaseModel):
     symbol: Optional[str] = Field(None, max_length=50)
     broker_id: Optional[int] = None
     order_id: Optional[str] = Field(None, max_length=64)
-    occurred_utc: Optional[datetime] = Field(
+    occurred: Optional[datetime] = Field(
         None, description="When the writer says it happened; not when we stored it")
     payload: Optional[Any] = Field(None, description="Structured detail, stored as JSON")
 
@@ -93,7 +93,7 @@ class EventRecord(BaseModel):
     symbol: Optional[str] = Field(None, max_length=50)
     broker_id: Optional[int] = None
     order_id: Optional[str] = Field(None, max_length=64)
-    occurred_utc: Optional[datetime] = None
+    occurred: Optional[datetime] = None
     payload: Optional[Any] = None
 
 

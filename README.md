@@ -102,7 +102,7 @@ existed to answer "which client wrote this" and could not.
 
 Normalised rather than rejected: a client with a stale spelling should still get its line recorded,
 and normalising is server-side so a raw-HTTP client gets it too. `Service` is indexed
-`(Service, ReceivedUtc DESC)`, so filtering by client and the `/stats` breakdown are seeks rather
+`(Service, Received DESC)`, so filtering by client and the `/stats` breakdown are seeks rather
 than scans of a table that only grows.
 
 `GET /stats` reports it directly:
@@ -124,7 +124,7 @@ GET /logs?correlation_id=decision-2026-10-29-AAPL
 GET /events?correlation_id=decision-2026-10-29-AAPL
 ```
 
-`occurred_utc` is the writer's clock; `received_utc` is when this service stored it. A widening
+`occurred` is the writer's clock; `received` is when this service stored it. A widening
 gap between them is a backlog, which is why both are kept.
 
 ---

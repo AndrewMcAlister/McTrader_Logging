@@ -8,6 +8,13 @@ response shapes, the client, and the rules that make an integration correct.
 - **Content type:** `application/json`
 - **OpenAPI:** `GET /docs`
 - **Python package:** `mctrader_logging` (project directory `McTrader_Logging`)
+- **Times are local wall-clock.** Every timestamp stored and returned is this machine's local time,
+  with no `Z` or offset, and none should be added — they are what the desk clock said. The fields are
+  named `received` and `occurred` rather than `received_utc` so this is not a surprise.
+
+  Two consequences before you compare them with anything else: a timestamp cannot be compared with one
+  from another timezone without knowing this one, and for one hour each autumn the local time is
+  ambiguous, so two events an hour apart can carry the same wall clock.
 
 ---
 
@@ -40,7 +47,7 @@ plan, on purpose.** The console copy is the local record.
       "symbol": "AXGN",
       "broker_id": 1,
       "order_id": "9fab18a7-5e62-4330-85cd-331e7cb7cf7e",
-      "occurred_utc": "2026-10-29T14:30:04.328879Z",
+      "occurred": "2026-10-29T14:30:04.328879",
       "payload": { "notional": 2500, "stop_atr_multiple": 1.0 }
     }
   ]
@@ -59,7 +66,7 @@ plan, on purpose.** The console copy is the local record.
 | `symbol` | no | max 50 |
 | `broker_id` | no | integer |
 | `order_id` | no | **any string**, max 64 — does not have to be a UUID |
-| `occurred_utc` | no | when it happened on *your* clock; the service records its own receive time separately |
+| `occurred` | no | when it happened on *your* clock; the service records its own receive time separately |
 | `payload` | no | any JSON value, stored as JSON |
 
 **202 response**
@@ -100,7 +107,7 @@ For things that happened, as opposed to free-text: `order.submitted`, `order.fil
       "symbol": "AXGN",
       "broker_id": 1,
       "order_id": "9fab18a7-5e62-4330-85cd-331e7cb7cf7e",
-      "occurred_utc": "2026-10-29T14:30:22Z",
+      "occurred": "2026-10-29T14:30:22",
       "payload": { "notional": 2500, "qty": null, "stop_price": 225.58 }
     }
   ]
@@ -112,7 +119,7 @@ For things that happened, as opposed to free-text: `order.submitted`, `order.fil
 | `service` | **yes** | |
 | `event_type` | **yes** | max 64 |
 | `level` | no | defaults to `INFO`. Any level in `dbo.LogLevels`, by name, alias or number. An event that failed or was rejected should say so, or it cannot appear in a "WARNING or above" query |
-| `correlation_id`, `cycle_id`, `symbol`, `broker_id`, `order_id`, `occurred_utc`, `payload` | no | as above |
+| `correlation_id`, `cycle_id`, `symbol`, `broker_id`, `order_id`, `occurred`, `payload` | no | as above |
 
 **202 response:** same shape as `/log`.
 
@@ -138,8 +145,8 @@ For things that happened, as opposed to free-text: `order.submitted`, `order.fil
   "rows": [
     {
       "id": 42,
-      "received_utc": "2026-10-29T04:30:04.412",
-      "occurred_utc": "2026-10-29T04:30:04.328",
+      "received": "2026-10-29T04:30:04.412",
+      "occurred": "2026-10-29T04:30:04.328",
       "service": "mini_mctrader",
       "correlation_id": "15cb68c3-ba5d-46a1-8468-e1a1684ea10d",
       "cycle_id": "2026-10-29-1030",
@@ -157,7 +164,7 @@ For things that happened, as opposed to free-text: `order.submitted`, `order.fil
 }
 ```
 
-Rows are newest first. `received_utc` is when the service stored it; `occurred_utc` is when the
+Rows are newest first. `received` is when the service stored it; `occurred` is when the
 writer said it happened — a widening gap between them is a backlog. `payload` is a **JSON string**,
 not a nested object: parse it if you need it.
 
@@ -398,7 +405,7 @@ def log_line(location, message, level="INFO", **fields):
         "message": message,
         "level": level,
         "correlation_id": CID,
-        "occurred_utc": datetime.now(timezone.utc).isoformat(),
+        "occurred": datetime.now().isoformat(),
         "payload": fields or None,
     }]}, headers={"X-Correlation-Id": CID}, timeout=5)
 ```

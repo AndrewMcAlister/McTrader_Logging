@@ -47,9 +47,9 @@ MOVABLE = ("LogEntry", "LogEvent")
 #: Explicit column lists, because IDENTITY_INSERT refuses `SELECT *`: the server cannot verify a
 #: positional copy includes the identity column, so it declines rather than guess.
 COLUMNS = {
-    "LogEntry": ("LogId, ReceivedUtc, OccurredUtc, Service, CorrelationId, CycleId, Level, "
+    "LogEntry": ("LogId, Received, Occurred, Service, CorrelationId, CycleId, Level, "
                  "LevelName, Category, Location, Message, Symbol, BrokerId, OrderId, Payload"),
-    "LogEvent": ("EventId, ReceivedUtc, OccurredUtc, Service, CorrelationId, CycleId, EventType, "
+    "LogEvent": ("EventId, Received, Occurred, Service, CorrelationId, CycleId, EventType, "
                  "Symbol, BrokerId, OrderId, Payload"),
 }
 
