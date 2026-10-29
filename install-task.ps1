@@ -33,7 +33,6 @@ param(
     [switch]$Run,
     [switch]$Restart,
     [switch]$Status,
-    [int]$IntervalMinutes = 10,
     [string]$User
 )
 
@@ -165,13 +164,11 @@ if ($Install) {
     $boot = New-ScheduledTaskTrigger -AtStartup
     $boot.Delay = 'PT2M'
 
-    # NO -RepetitionDuration. `[TimeSpan]::MaxValue` serialises to P99999999DT23H59M59S and Task
-    # Scheduler refuses the whole task XML ("value ... incorrectly formatted or out of range").
-    # Omitting it is what means "no end" -- verified by registering a throwaway task: with the value
-    # the XML is rejected, without it the XML is accepted. Clearing it later works too, but omitting
-    # is one less moving part.
-    $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
-        -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
+    # ONE trigger, at boot -- the same shape as McTrader_AutoStart_OnBoot.
+    #
+    # There is deliberately no repeating trigger. The launcher stops whatever holds the port before
+    # starting, so a repeating trigger would restart the service on every fire, forever. McTrader's
+    # task is boot-only for the same reason: it is what makes a kill-before-start script safe.
 
     $settings = New-ScheduledTaskSettingsSet `
         -StartWhenAvailable `
@@ -181,7 +178,7 @@ if ($Install) {
         -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 
     Register-ScheduledTask -TaskName $TaskName `
-        -Action $action -Trigger @($boot, $repeat) -Settings $settings `
+        -Action $action -Trigger $boot -Settings $settings `
         -Description $Description `
         -User $credential.UserName -Password $plainPassword -RunLevel Highest | Out-Null
 

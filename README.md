@@ -288,15 +288,37 @@ Task Scheduler stores the password; this script never writes it anywhere.
 also have worked — but an S4U task runs *without* your credential vault, and keeping one pattern for
 both services is worth more than the distinction.
 
-### Why a repeating trigger as well as boot
+### One trigger, at boot — and what that costs
 
-A boot trigger starts the service once and never notices it die. `Ensure-LoggingService.ps1` runs every
-10 minutes and is idempotent: it judges readiness by **port** (8004, unambiguous — two projects could
-both be `-m ...service`), and it caps starts at 6/hour so a service crashing on startup leaves a record
-in `logs\ensure-history.txt` rather than an invisible relaunch loop.
+The task fires **once, at boot**, the same shape as `McTrader_AutoStart_OnBoot`. This service needs
+no repeating sweep, and the launcher must not have one: it now **stops whatever holds the port before
+starting**, which is what makes running it by hand a restart. A 10-minute trigger plus a
+kill-before-start script would restart the service every ten minutes forever.
+
+That is the same reason McTrader's start script can afford to call `Stop-StaleListener`: its task is
+boot-only and runs once.
+
+**The cost is real and worth stating.** There is no watchdog. If the process dies, nothing brings it
+back until the next reboot or until someone runs the launcher:
+
+```powershell
+.\scripts\Ensure-LoggingService.ps1
+```
+
+The estate already carries this exposure — `McTrader_AutoStart_OnBoot` is boot-only too — so this is
+consistency rather than a new risk. If you would rather have recovery than parity, a repeating
+trigger is one command away, with the caveat that the launcher would then need to go back to
+start-if-absent:
+
+```powershell
+# the alternative, NOT the current setting
+New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
+    -RepetitionInterval (New-TimeSpan -Minutes 10)
+```
 
 For a log sink the failure is quiet: nothing on the trading path breaks, so nobody notices it is down
-until they go looking for a record of an incident that is now unrecoverable.
+until they go looking for a record of an incident that is now unrecoverable. That is the argument for
+the watchdog, and it is why the trade is written down rather than assumed.
 
 ### Restarting it — and the trap
 
@@ -313,14 +335,16 @@ The launcher takes three modes, and the difference between them is the whole tra
 
 | Call | Does | Used by |
 |---|---|---|
-| `Ensure-LoggingService.ps1` | starts only if nothing holds the port | the scheduled task, every 10 minutes |
+| `Ensure-LoggingService.ps1` | stops any stale listener, then starts | the scheduled task, at boot |
 | `Ensure-LoggingService.ps1 -Stop` | stops what holds the port | you |
 | `Ensure-LoggingService.ps1 -Restart` | stop, then start | you |
 
-The default does **not** kill on sight, because that same script is the watchdog on a 10-minute
-trigger — it would restart the service every ten minutes forever. Stopping is a decision a person
-makes, so it needs a switch. This mirrors McTrader, whose start script kills a stale listener first:
-the reason it can is that its task is boot-only and runs once.
+The default **does** kill first. This mirrors McTrader exactly: its start script calls
+`Stop-StaleListener` before starting, and its task is boot-only, which is what makes that safe. So a
+bare run of `Ensure-LoggingService.ps1` is a restart, the same way `StartMcTraderHeadless.ps1` is.
+
+`-Stop` and `-Restart` remain because they are clearer than relying on that, and because a stop
+without a start had no way to be expressed at all.
 
 **Task Scheduler's "End" does not stop this service.** It ends the *task*, and the launcher starts the
 service *detached* — deliberately, so a task that finishes in two seconds does not take the service

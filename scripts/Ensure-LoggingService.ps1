@@ -3,7 +3,7 @@
     Start McTrader_Logging if it is not already running. Idempotent.
 
 .DESCRIPTION
-    Run by a scheduled task, repeatedly. Modelled on PaperTrader's EnsurePaperTrader.ps1, whose header
+    Run by a scheduled task at boot, and by hand to restart the service. Modelled on PaperTrader's EnsurePaperTrader.ps1, whose header
     records why a boot-only trigger is not enough -- a reboot left the trader down for 43 minutes
     before the US close.
 
@@ -74,10 +74,11 @@ function Get-RecentStarts {
 
 Note "ensure: port=$Port pid=$PID"
 
-if ($Stop -or $Restart) {
-    # Deliberately NOT part of the default path. The scheduled task runs this script every ten
-    # minutes; if it killed whatever held the port, it would restart the service every ten minutes
-    # forever. Stopping is a decision a person makes, so it needs a switch.
+# Stop whatever holds the port before starting, unconditionally.
+#
+# This is McTrader's Stop-StaleListener, and it is what makes a bare run of this script a
+# RESTART rather than a no-op. It is only safe because the scheduled task is boot-only: with a
+# repeating trigger this would restart the service every ten minutes forever.
     $listening = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
     if (-not $listening) {
         Note "nothing listening on $Port"
@@ -102,13 +103,8 @@ if ($Stop -or $Restart) {
         exit 1
     }
     if ($listening) { Note "stopped cleanly" }
+    # -Stop ends here. Without it the script carries on and starts the service again.
     if ($Stop) { exit 0 }
-}
-
-if (Test-Port $Port) {
-    Note "already listening on $Port -- nothing to do"
-    exit 0
-}
 
 if (-not (Test-Path $Python)) {
     Note "FAILED: no interpreter at $Python"
